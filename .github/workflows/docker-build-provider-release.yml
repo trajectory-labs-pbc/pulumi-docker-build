@@ -70,6 +70,10 @@ jobs:
 
       - name: Publish the GitHub release
         shell: bash
+        env:
+          # `gh` does not read github.token implicitly in Actions; without this every
+          # invocation exits "set the GH_TOKEN environment variable".
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh release create "$TAG" --target "$GITHUB_SHA" \
