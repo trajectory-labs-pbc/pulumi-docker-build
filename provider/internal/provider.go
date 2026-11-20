@@ -17,6 +17,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	csgen "github.com/pulumi/pulumi-dotnet/pulumi-language-dotnet/v3/codegen"
 	provider "github.com/pulumi/pulumi-go-provider"
@@ -29,6 +30,7 @@ import (
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/tokens"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	"github.com/pulumi/pulumi/sdk/v3/go/property"
 )
 
 var (
@@ -135,6 +137,22 @@ func NewBuildxProvider(clientF clientF) provider.Provider {
 		},
 	)
 
+	// pulumi-go-provider's infer diff removes the engine's `version` input and every
+	// `__`-prefixed key from the new config inputs, but not from the old ones, and it
+	// replaces the provider on any config difference. A default provider upgrade
+	// (`default_0_0_21` -> `default_0_0_23`) makes the engine diff the old provider's
+	// inputs with the new provider's DiffConfig, so `__pulumi-go-provider-infer` and
+	// `__pulumi-go-provider-version` in the old inputs read as removed and every Image
+	// is replaced. A replaced Image deletes the original's digest from its registry,
+	// which is the replacement's own digest when the content did not change. Remove
+	// the same keys from the old inputs before the diff. See
+	// pulumi/pulumi-go-provider#288 and pulumi/pulumi-docker-build#606.
+	diffConfig := prov.DiffConfig
+	prov.DiffConfig = func(ctx context.Context, req provider.DiffRequest) (provider.DiffResponse, error) {
+		req.OldInputs = withoutEngineConfigKeys(req.OldInputs)
+		return diffConfig(ctx, req)
+	}
+
 	return prov
 }
 
@@ -144,4 +162,15 @@ func Schema(ctx context.Context, version string) schema.PackageSpec {
 	spec, err := provider.GetSchema(ctx, "docker-build", version, p)
 	contract.AssertNoErrorf(err, "missing schema")
 	return spec
+}
+
+// withoutEngineConfigKeys returns m without the keys infer's diff removes from new
+// config inputs: `version` and every `__`-prefixed key.
+func withoutEngineConfigKeys(m property.Map) property.Map {
+	for k := range m.All {
+		if k == "version" || strings.HasPrefix(k, "__") {
+			m = m.Delete(k)
+		}
+	}
+	return m
 }
