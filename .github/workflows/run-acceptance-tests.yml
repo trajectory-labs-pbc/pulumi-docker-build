@@ -17,6 +17,8 @@ env:
   PYTHONVERSION: "3.11.15"
   DOTNETVERSION: "8.0.x"
   JAVAVERSION: "11"
+  MISE_ENV: test
+  GO_TEST_EXEC: "gotestsum --format github-actions --"
   GOOGLE_CI_SERVICE_ACCOUNT_EMAIL: pulumi-ci@pulumi-ci-gcp-provider.iam.gserviceaccount.com
   GOOGLE_CI_WORKLOAD_IDENTITY_POOL: pulumi-ci
   GOOGLE_CI_WORKLOAD_IDENTITY_PROVIDER: pulumi-ci
@@ -67,16 +69,21 @@ jobs:
         lfs: true
         persist-credentials: false
         ref: ${{ env.PR_COMMIT_SHA }}    
-    - env:
-        ESC_ACTION_ENVIRONMENT: github-secrets/${{ github.repository_owner }}-${{ github.event.repository.name }}
-        ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: "false"
-        ESC_ACTION_OIDC_AUTH: "true"
-        ESC_ACTION_OIDC_ORGANIZATION: pulumi
-        ESC_ACTION_OIDC_REQUESTED_TOKEN_TYPE: urn:pulumi:token-type:access_token:organization
-      id: esc-secrets
+    - id: esc-auth
+      name: Authenticate with Pulumi Cloud
+      uses: pulumi/auth-actions@141415910c3beb54e03b48e9057c204c97b956f2
+      with:
+        export-environment-variables: "false"
+        organization: pulumi
+        requested-token-type: urn:pulumi:token-type:access_token:organization
+    - id: esc-secrets
       name: Fetch secrets from ESC
-      uses: pulumi/esc-action@9eb774255b1a4afb7855678ae8d4a77359da0d9b
-    - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      uses: pulumi/esc-action@ce885ce2ea6bf59194b7b0a3e94a4d3f7bacece0
+      with:
+        environment: github-secrets/${{ github.repository_owner }}-${{ github.event.repository.name }}
+        export-environment-variables: "false"
+        pulumi-access-token: ${{ steps.esc-auth.outputs.pulumi-access-token }}
+    - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
       id: app-auth
       with:
         app-id: ${{ steps.esc-secrets.outputs.PULUMI_PROVIDER_AUTOMATION_APP_ID }}
@@ -171,11 +178,11 @@ jobs:
 
         git config --global user.name "pulumi-bot"
 
-        # Stash local changes and check out the PR's branch directly.
+        # Stash local changes and check out the PR's branch directly, fetching only that ref so submodule recursion never sees gitlinks from unrelated branches.
 
         git stash
 
-        git fetch
+        git fetch --no-recurse-submodules origin "+refs/heads/$HEAD_REF:refs/remotes/origin/$HEAD_REF"
 
         git checkout "origin/$HEAD_REF"
 
@@ -200,8 +207,29 @@ jobs:
 
         # Push with pulumi-bot credentials to trigger a re-run of the
         # workflow. https://github.com/orgs/community/discussions/25702
+        #
+        # Another language's job may have pushed while this one was building,
+        # which makes our commit a non-fast-forward. Rebase onto the current
+        # tip and try again: the SDK commits touch disjoint paths
+        # (sdk/<language>/**), so the rebase applies cleanly.
 
-        git push https://pulumi-bot:${{ steps.esc-secrets.outputs.PULUMI_BOT_TOKEN }}@github.com/${{ github.repository }}     "HEAD:$HEAD_REF"
+        for attempt in 1 2 3; do
+          if git push https://pulumi-bot:${{ steps.esc-secrets.outputs.PULUMI_BOT_TOKEN }}@github.com/${{ github.repository }} "HEAD:$HEAD_REF"; then
+            exit 0
+          fi
+          echo "Push rejected (attempt $attempt); rebasing onto the current tip."
+          git fetch --no-recurse-submodules origin "+refs/heads/$HEAD_REF:refs/remotes/origin/$HEAD_REF"
+          # --autostash because the `git reset` above deliberately leaves the
+          # always-changing files modified, and rebase refuses a dirty tree.
+          if ! git rebase --autostash "refs/remotes/origin/$HEAD_REF"; then
+            echo "::error::Rebase onto $HEAD_REF failed; the SDK commit must be applied by hand."
+            exit 1
+          fi
+        done
+
+        echo "::error::Could not push the SDK commit after 3 attempts."
+
+        exit 1
       env:
         HEAD_REF: ${{ github.head_ref }}
     - run: git status --porcelain
@@ -210,7 +238,7 @@ jobs:
         github.workspace}}/bin/ pulumi-resource-${{ env.PROVIDER }}
         pulumi-gen-${{ env.PROVIDER}}
     - name: Upload artifacts
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: pulumi-${{ env.PROVIDER }}-provider.tar.gz
         path: ${{ github.workspace }}/bin/provider.tar.gz
@@ -219,7 +247,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Upload coverage reports to Codecov
-      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+      uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
       env:
         CODECOV_TOKEN: ${{ steps.esc-secrets.outputs.CODECOV_TOKEN }}
     - if: failure() && github.event_name == 'push'
@@ -256,16 +284,21 @@ jobs:
         lfs: true
         persist-credentials: false
         ref: ${{ env.PR_COMMIT_SHA }}    
-    - env:
-        ESC_ACTION_ENVIRONMENT: github-secrets/${{ github.repository_owner }}-${{ github.event.repository.name }}
-        ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: "false"
-        ESC_ACTION_OIDC_AUTH: "true"
-        ESC_ACTION_OIDC_ORGANIZATION: pulumi
-        ESC_ACTION_OIDC_REQUESTED_TOKEN_TYPE: urn:pulumi:token-type:access_token:organization
-      id: esc-secrets
+    - id: esc-auth
+      name: Authenticate with Pulumi Cloud
+      uses: pulumi/auth-actions@141415910c3beb54e03b48e9057c204c97b956f2
+      with:
+        export-environment-variables: "false"
+        organization: pulumi
+        requested-token-type: urn:pulumi:token-type:access_token:organization
+    - id: esc-secrets
       name: Fetch secrets from ESC
-      uses: pulumi/esc-action@9eb774255b1a4afb7855678ae8d4a77359da0d9b
-    - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      uses: pulumi/esc-action@ce885ce2ea6bf59194b7b0a3e94a4d3f7bacece0
+      with:
+        environment: github-secrets/${{ github.repository_owner }}-${{ github.event.repository.name }}
+        export-environment-variables: "false"
+        pulumi-access-token: ${{ steps.esc-auth.outputs.pulumi-access-token }}
+    - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
       id: app-auth
       with:
         app-id: ${{ steps.esc-secrets.outputs.PULUMI_PROVIDER_AUTOMATION_APP_ID }}
@@ -283,7 +316,7 @@ jobs:
       with:
         github_token: ${{ steps.app-auth.outputs.token }}
     - name: Download provider
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: pulumi-${{ env.PROVIDER }}-provider.tar.gz
         path: ${{ github.workspace }}/bin
@@ -320,11 +353,11 @@ jobs:
 
         git config --global user.name "pulumi-bot"
 
-        # Stash local changes and check out the PR's branch directly.
+        # Stash local changes and check out the PR's branch directly, fetching only that ref so submodule recursion never sees gitlinks from unrelated branches.
 
         git stash
 
-        git fetch
+        git fetch --no-recurse-submodules origin "+refs/heads/$HEAD_REF:refs/remotes/origin/$HEAD_REF"
 
         git checkout "origin/$HEAD_REF"
 
@@ -348,15 +381,36 @@ jobs:
 
         # Push with pulumi-bot credentials to trigger a re-run of the
         # workflow. https://github.com/orgs/community/discussions/25702
+        #
+        # Another language's job may have pushed while this one was building,
+        # which makes our commit a non-fast-forward. Rebase onto the current
+        # tip and try again: the SDK commits touch disjoint paths
+        # (sdk/<language>/**), so the rebase applies cleanly.
 
-        git push https://pulumi-bot:${{ steps.esc-secrets.outputs.PULUMI_BOT_TOKEN }}@github.com/${{ github.repository }}     "HEAD:$HEAD_REF"
+        for attempt in 1 2 3; do
+          if git push https://pulumi-bot:${{ steps.esc-secrets.outputs.PULUMI_BOT_TOKEN }}@github.com/${{ github.repository }} "HEAD:$HEAD_REF"; then
+            exit 0
+          fi
+          echo "Push rejected (attempt $attempt); rebasing onto the current tip."
+          git fetch --no-recurse-submodules origin "+refs/heads/$HEAD_REF:refs/remotes/origin/$HEAD_REF"
+          # --autostash because the `git reset` above deliberately leaves the
+          # always-changing files modified, and rebase refuses a dirty tree.
+          if ! git rebase --autostash "refs/remotes/origin/$HEAD_REF"; then
+            echo "::error::Rebase onto $HEAD_REF failed; the SDK commit must be applied by hand."
+            exit 1
+          fi
+        done
+
+        echo "::error::Could not push the SDK commit after 3 attempts."
+
+        exit 1
       env:
         HEAD_REF: ${{ github.head_ref }}
     - run: git status --porcelain
     - name: Tar SDK folder
       run: tar -zcf sdk/${{ matrix.language }}.tar.gz -C sdk/${{ matrix.language }} .
     - name: Upload artifacts
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ matrix.language  }}-sdk.tar.gz
         path: ${{ github.workspace}}/sdk/${{ matrix.language }}.tar.gz
@@ -397,16 +451,21 @@ jobs:
         lfs: true
         persist-credentials: false
         ref: ${{ env.PR_COMMIT_SHA }}    
-    - env:
-        ESC_ACTION_ENVIRONMENT: github-secrets/${{ github.repository_owner }}-${{ github.event.repository.name }}
-        ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: "false"
-        ESC_ACTION_OIDC_AUTH: "true"
-        ESC_ACTION_OIDC_ORGANIZATION: pulumi
-        ESC_ACTION_OIDC_REQUESTED_TOKEN_TYPE: urn:pulumi:token-type:access_token:organization
-      id: esc-secrets
+    - id: esc-auth
+      name: Authenticate with Pulumi Cloud
+      uses: pulumi/auth-actions@141415910c3beb54e03b48e9057c204c97b956f2
+      with:
+        export-environment-variables: "false"
+        organization: pulumi
+        requested-token-type: urn:pulumi:token-type:access_token:organization
+    - id: esc-secrets
       name: Fetch secrets from ESC
-      uses: pulumi/esc-action@9eb774255b1a4afb7855678ae8d4a77359da0d9b
-    - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      uses: pulumi/esc-action@ce885ce2ea6bf59194b7b0a3e94a4d3f7bacece0
+      with:
+        environment: github-secrets/${{ github.repository_owner }}-${{ github.event.repository.name }}
+        export-environment-variables: "false"
+        pulumi-access-token: ${{ steps.esc-auth.outputs.pulumi-access-token }}
+    - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
       id: app-auth
       with:
         app-id: ${{ steps.esc-secrets.outputs.PULUMI_PROVIDER_AUTOMATION_APP_ID }}
@@ -424,7 +483,7 @@ jobs:
       with:
         github_token: ${{ steps.app-auth.outputs.token }}
     - name: Download provider
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: pulumi-${{ env.PROVIDER }}-provider.tar.gz
         path: ${{ github.workspace }}/bin
@@ -436,7 +495,7 @@ jobs:
         -exec chmod +x {} \;
     - name: Download SDK
       if: ${{ matrix.language != 'yaml' }}
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: ${{ matrix.language }}-sdk.tar.gz
         path: ${{ github.workspace}}/sdk/
@@ -464,7 +523,7 @@ jobs:
         requested-token-type: urn:pulumi:token-type:access_token:organization
         export-environment-variables: false
     - name: Export AWS Credentials
-      uses: pulumi/esc-action@3af4859af8a73a362fb599b944124097d4bb80c5
+      uses: pulumi/esc-action@ce885ce2ea6bf59194b7b0a3e94a4d3f7bacece0 # v4
       env:
         PULUMI_ACCESS_TOKEN: ${{ steps.generate_pulumi_token.outputs.pulumi-access-token }}
       with:
@@ -481,16 +540,11 @@ jobs:
       uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
       with:
         install_components: gke-gcloud-auth-plugin
-    - name: Install gotestfmt
-      uses: GoTestTools/gotestfmt-action@v2
-      with:
-        version: v2.5.0
-        token: ${{ secrets.GITHUB_TOKEN }}
     - name: Run tests
       run: >-
         set -euo pipefail
 
-        cd examples && go test -count=1 -cover -timeout 2h -tags=${{ matrix.language }} -parallel 4 .
+        cd examples && $GO_TEST_EXEC -count=1 -cover -timeout 2h -tags=${{ matrix.language }} -parallel 4 .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - if: failure() && github.event_name == 'push'
@@ -514,15 +568,20 @@ jobs:
         lfs: true
         persist-credentials: false
         ref: ${{ env.PR_COMMIT_SHA }}    
-    - env:
-        ESC_ACTION_ENVIRONMENT: github-secrets/${{ github.repository_owner }}-${{ github.event.repository.name }}
-        ESC_ACTION_EXPORT_ENVIRONMENT_VARIABLES: "false"
-        ESC_ACTION_OIDC_AUTH: "true"
-        ESC_ACTION_OIDC_ORGANIZATION: pulumi
-        ESC_ACTION_OIDC_REQUESTED_TOKEN_TYPE: urn:pulumi:token-type:access_token:organization
-      id: esc-secrets
+    - id: esc-auth
+      name: Authenticate with Pulumi Cloud
+      uses: pulumi/auth-actions@141415910c3beb54e03b48e9057c204c97b956f2
+      with:
+        export-environment-variables: "false"
+        organization: pulumi
+        requested-token-type: urn:pulumi:token-type:access_token:organization
+    - id: esc-secrets
       name: Fetch secrets from ESC
-      uses: pulumi/esc-action@9eb774255b1a4afb7855678ae8d4a77359da0d9b
+      uses: pulumi/esc-action@ce885ce2ea6bf59194b7b0a3e94a4d3f7bacece0
+      with:
+        environment: github-secrets/${{ github.repository_owner }}-${{ github.event.repository.name }}
+        export-environment-variables: "false"
+        pulumi-access-token: ${{ steps.esc-auth.outputs.pulumi-access-token }}
     - name: Mark workflow as successful
       uses: guibranco/github-status-action-v2@77639353504055053524efa7a3719aaf0b731ce9 # v1.2.4
       with:
