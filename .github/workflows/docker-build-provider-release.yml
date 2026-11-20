@@ -1,4 +1,5 @@
-# Copy to sjawhar/pulumi-docker-build/.github/workflows/docker-build-provider-release.yml.
+# The release workflow of trajectory-labs-pbc/pulumi-docker-build. agent-c's
+# infra/pulumi/docker_build_patch.py pins its releases; keep the test list below equal to PATCH_TESTS there.
 name: Publish docker-build provider release
 
 on:
@@ -39,7 +40,7 @@ jobs:
           ASSET="pulumi-resource-docker-build-${UPSTREAM_TAG}-${PATCH_SHORT}-linux-amd64.tar.gz"
           printf '%s\n' "TAG=$TAG" "UPSTREAM_TAG=$UPSTREAM_TAG" "PATCH_SHORT=$PATCH_SHORT" "ASSET=$ASSET" >> "$GITHUB_ENV"
           export GOTOOLCHAIN="$GO_TOOLCHAIN" GOFLAGS="" GOAMD64=v1 GOEXPERIMENT="" GOENV=off
-          for test in TestHashIgnoresUmaskDerivedPermissions TestHashDockerfileErrorIsNotSwallowed TestHashFilemodeMatters; do
+          for test in TestHashIgnoresUmaskDerivedPermissions TestHashDockerfileErrorIsNotSwallowed TestHashFilemodeMatters TestDiffConfigProviderUpgradeIsNotAReplace TestDiffConfigHostChangeIsAReplace; do
             output="$(go test -count=1 -v -run "^${test}$" ./provider/internal/)"
             printf '%s\n' "$output"
             case "$output" in *"--- PASS: $test"*) ;; *) echo "$test did not run" >&2; exit 1 ;; esac
